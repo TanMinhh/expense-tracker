@@ -1,6 +1,6 @@
-from flask import Flask, render_template, request, url_for, make_response, flash, redirect
+from flask import Flask, render_template, request, url_for, make_response, flash, redirect, Response
 from flask_sqlalchemy import SQLAlchemy
-from datetime import date, datetime
+from datetime import date, datetime, date as dt_date
 from sqlalchemy import func
 
 app = Flask(__name__)
@@ -135,6 +135,43 @@ def add():
     print("Form received: ", dict(request.form))
     return make_response("Form received check the console...")
 
+@app.route("/edit/<int:expense_id>", methods=["GET"])
+def edit(expense_id):
+    e = Expense.query.get_or_404(expense_id)
+    return render_template("edit.html", expense = e, categories = CATEGORIES, today = dt_date.today().isoformat())
+
+@app.route("/edit/<int:expense_id>", methods=["POST"])
+def edit_post(expense_id):
+    e = Expense.query.get_or_404(expense_id)
+    description = (request.form.get("description") or "").strip()
+    amount_str = (request.form.get("amount") or "").strip()
+    category = (request.form.get("category") or "").strip()
+    date_str = (request.form.get("date") or "").strip()
+
+    if not description or not amount_str or not category:
+        flash("Fill all information below", "error")
+        return redirect(url_for("edit", expense_id=expense_id))
+    
+    try:
+        if float(amount_str) <= 0:
+            raise ValueError
+    except ValueError:
+        flash("Amount must be a positive number", "error")
+        return redirect(url_for("edit", expense_id=expense_id))
+    
+    try:
+        d = datetime.strptime(date_str, "%Y-%m-%d").date() if date_str else dt_date.today()
+    except ValueError:
+        d = dt_date.today()
+
+    e.description = description
+    e.amount = float(amount_str)
+    e.category = category
+    e.date = d
+    db.session.commit()
+    flash("Expense updated", "success")
+    return redirect(url_for("index"))
+
 @app.route("/delete/<int:expense_id>", methods=["POST"])
 def delete(expense_id):
     e = Expense.query.get_or_404(expense_id)
@@ -142,6 +179,40 @@ def delete(expense_id):
     db.session.commit()
     flash("Expense deleted.", "success")
     return redirect(url_for("index"))
+
+@app.route("/export.csv")
+def export_csv():
+    start_str = (request.args.get("start") or "").strip()
+    end_str = (request.args.get("end") or "").strip()
+    selected_category = (request.args.get("category") or "").strip()
+
+    start_date = parse_date_or_none(start_str)
+    end_date = parse_date_or_none(end_str)
+
+    q = Expense.query
+    if start_date:
+        q = q.filter(Expense.date >= start_date)
+    if end_date:
+        q = q.filter(Expense.date <= end_date)
+    if selected_category:
+        q = q.filter(Expense.category == selected_category)
+
+    expenses = q.order_by(Expense.date, Expense.id).all()
+    lines = ["date, description, category, amount"]
+    for e in expenses:
+        lines.append(f"{e.date.isoformat()}, {e.description}, {e.category}, {e.amount:.2f}")
+    csv_data = "\n".join(lines)
+    fname_start = start_str or "all"
+    fname_end = end_str or "all"
+    filename = f"expenses_{fname_start}_to_{fname_end}.csv"
+
+    return Response(
+        csv_data,
+        headers = {
+            "Content-Type": "text/csv",
+            "Content-Disposition": f"attachment; filename={filename}"
+        }
+    )
 
 if __name__ == "__main__":
     app.run(debug = True, port = 4040)
